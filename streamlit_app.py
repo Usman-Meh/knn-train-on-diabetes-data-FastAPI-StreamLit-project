@@ -20,7 +20,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = "https://knn-train-on-diabetes-data-fastapi-app-project-zbnswssmrlo28fr.streamlit.app"
 START_HINT = (
     "Could not reach the prediction service. Please start the FastAPI server "
     "first with `uvicorn main:app --reload`, then try again."
