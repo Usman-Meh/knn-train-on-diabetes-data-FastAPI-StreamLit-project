@@ -16,17 +16,71 @@ from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 import joblib
 import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
 
-MODEL_PATH = Path(__file__).parent / "model.pkl"
+BASE_DIR = Path(__file__).parent
+MODEL_PATH = BASE_DIR / "model.pkl"
+DATA_PATH = BASE_DIR / "diabetes.csv"
+
+FEATURES = [
+    "Pregnancies", "Glucose", "BloodPressure", "SkinThickness",
+    "Insulin", "BMI", "DiabetesPedigreeFunction", "Age",
+]
 
 # The model lives in this dict so your routes can reach it after startup.
 ml_model = {}
+
+
+def build_dataset_stats(model):
+    """Summarise the training data so the UI can put a patient in context."""
+    df = pd.read_csv(DATA_PATH)
+    X, y = df[FEATURES].values, df["Outcome"].values
+
+    # Same split as train_model.py, so this is the honest held-out accuracy.
+    _, X_test, _, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    accuracy = float((model.predict(X_test) == y_test).mean())
+
+    features = {}
+    for col in FEATURES:
+        values = df[col]
+        edges = np.histogram_bin_edges(values, bins=20)
+        features[col] = {
+            "min": float(values.min()),
+            "max": float(values.max()),
+            "mean_non_diabetic": round(float(values[y == 0].mean()), 3),
+            "mean_diabetic": round(float(values[y == 1].mean()), 3),
+            "quantiles": np.percentile(values, range(101)).round(3).tolist(),
+            "histogram": {
+                "edges": edges.round(3).tolist(),
+                "non_diabetic": np.histogram(values[y == 0], bins=edges)[0].tolist(),
+                "diabetic": np.histogram(values[y == 1], bins=edges)[0].tolist(),
+            },
+        }
+
+    return {
+        "model": {
+            "algorithm": "K-Nearest Neighbours (k=5) with StandardScaler",
+            "test_accuracy": round(accuracy, 4),
+            "test_size": int(len(y_test)),
+        },
+        "dataset": {
+            "name": "Pima Indians Diabetes",
+            "patients": int(len(df)),
+            "diabetic": int((y == 1).sum()),
+            "non_diabetic": int((y == 0).sum()),
+        },
+        "features": features,
+    }
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Load the model ONCE at startup — never inside the route.
     ml_model["predictor"] = joblib.load(MODEL_PATH)
+    ml_model["stats"] = build_dataset_stats(ml_model["predictor"])
 
     yield
 
@@ -61,6 +115,14 @@ class PredictionResult(BaseModel):
 def health():
     # Health check so you can confirm the server is up.
     return {"status": "running", "model_loaded": "predictor" in ml_model}
+
+
+@app.get("/stats")
+def stats():
+    # Dataset and model summary used by the UI's charts.
+    if "stats" not in ml_model:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+    return ml_model["stats"]
 
 
 @app.post("/predict", response_model=PredictionResult)
